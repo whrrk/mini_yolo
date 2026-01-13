@@ -1,20 +1,20 @@
 import tensorflow as tf
 
-def decode_yolov1_output(y_pred, S=7, B=2, C=20, conf_thres=0.25, iou_thres=0.5):
+def decode_yolov1_output(y_pred, S=7, bbox_count=2, conf_thres=0.25, iou_thres=0.5):
     """
-    y_pred: (1,S,S,B*5+C) 또는 (S,S,B*5+C)
+    y_pred: (1,S,S,B*5+class_count) 又は (S,S,B*5+class_count)
     return: boxes (N,4) in normalized xyxy, scores (N,), class_ids (N,)
     """
     if len(y_pred.shape) == 4:
         y_pred = y_pred[0]  # (S,S,...)  バッチ1 仮定
 
-    pred_bbox_conf = y_pred[..., :B*5]
-    pred_cls = y_pred[..., B*5:]  # (S,S,C)
+    pred_bbox_conf = y_pred[..., :bbox_count*5]
+    pred_cls = y_pred[..., bbox_count*5:]  # (S,S,class_count)
 
-    pred_bbox_conf = tf.reshape(pred_bbox_conf, (S, S, B, 5))
-    xy = pred_bbox_conf[..., 0:2]         # (S,S,B,2) 0~1
-    wh = pred_bbox_conf[..., 2:4]         # (S,S,B,2) positive
-    conf = pred_bbox_conf[..., 4]         # (S,S,B)
+    pred_bbox_conf = tf.reshape(pred_bbox_conf, (S, S, bbox_count, 5))
+    xy = pred_bbox_conf[..., 0:2]         # (S,S,bbox_count,2) 0~1
+    wh = pred_bbox_conf[..., 2:4]         # (S,S,bbox_count,2) positive
+    conf = pred_bbox_conf[..., 4]         # (S,S,bbox_count)
 
     # grid offsets
     grid_y = tf.range(S, dtype=tf.float32)
@@ -35,20 +35,20 @@ def decode_yolov1_output(y_pred, S=7, B=2, C=20, conf_thres=0.25, iou_thres=0.5)
     x2 = x_abs + w_abs / 2.0
     y2 = y_abs + h_abs / 2.0
 
-    boxes = tf.stack([x1, y1, x2, y2], axis=-1)  # (S,S,B,4)
+    boxes = tf.stack([x1, y1, x2, y2], axis=-1)  # (S,S,bbox_count,4)
 
     # class scores
-    cls_prob = pred_cls  # (S,S,C) already softmax
+    cls_prob = pred_cls  # (S,S,class_count) already softmax
     cls_id = tf.argmax(cls_prob, axis=-1)        # (S,S)
     cls_score = tf.reduce_max(cls_prob, axis=-1) # (S,S)
 
-    # expand to B boxes per cell: (S,S,B)
+    # expand to bbox_count boxes per cell: (S,S,Bbbox_count)
     cls_id = tf.expand_dims(cls_id, axis=-1)
-    cls_id = tf.tile(cls_id, [1,1,B])
+    cls_id = tf.tile(cls_id, [1,1,bbox_count])
     cls_score = tf.expand_dims(cls_score, axis=-1)
-    cls_score = tf.tile(cls_score, [1,1,B])
+    cls_score = tf.tile(cls_score, [1,1,bbox_count])
 
-    scores = conf * cls_score  # (S,S,B)
+    scores = conf * cls_score  # (S,S,bbox_count)
 
     # flatten
     boxes_f = tf.reshape(boxes, (-1, 4))

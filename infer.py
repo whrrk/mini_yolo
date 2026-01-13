@@ -5,12 +5,14 @@ from model import build_yolov1
 from decode import decode_yolov1_output  # decode関数
 
 IMG_SIZE = 320
-S=7; B=2; C=4
+GRID_SIZE=7; 
+BBOX_COUNT=2; 
+CLASS_COUNT=4
 
 # クラスの名前 - yamlの名前
 NAMES = ["buffalo","elephant","rhino","zebra"]
 
-model = build_yolov1((IMG_SIZE,IMG_SIZE,3), S=S, B=B, C=C, backbone_trainable=False)
+model = build_yolov1((IMG_SIZE,IMG_SIZE,3), grid_size=GRID_SIZE, bbox_count=BBOX_COUNT, class_count=CLASS_COUNT, backbone_trainable=False)
 model.load_weights("checkpoints/mini_yolo.weights.h5")
 
 def preprocess(path):
@@ -24,7 +26,7 @@ def preprocess(path):
 bgr, img, (H,W) = preprocess("african-wildlife/images/test/000000.jpg")
 
 y_pred = model(img[None, ...], training=False).numpy()
-boxes, scores, cls_ids = decode_yolov1_output(y_pred, S=S, B=B, C=C, conf_thres=0.25, iou_thres=0.5)
+boxes, scores, cls_ids = decode_yolov1_output(y_pred, grid_size=GRID_SIZE, bbox_count=BBOX_COUNT, conf_thres=0.25, iou_thres=0.5)
 
 # normalized xyxy -> pixel
 boxes = boxes.numpy()

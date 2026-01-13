@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 from pathlib import Path
 
+## parsing label
 def parse_label_file(label_path: str):
     # label_path: bytes -> str
     label_path = label_path.decode("utf-8")
@@ -22,25 +23,26 @@ def parse_label_file(label_path: str):
         return np.zeros((0, 5), dtype=np.float32)
     return np.array(rows, dtype=np.float32)
 
-def encode_yolov1_targets(labels_np: np.ndarray, S: int, C: int):
+## encoding target
+def encode_yolov1_targets(labels_np: np.ndarray, grid_size: int, class_count: int):
     # labels_np: (N,5) [cls, x, y, w, h] normalized to 0..1
-    box = np.zeros((S, S, 4), dtype=np.float32)
-    obj = np.zeros((S, S, 1), dtype=np.float32)
-    cls = np.zeros((S, S, C), dtype=np.float32)
+    box = np.zeros((grid_size, grid_size, 4), dtype=np.float32)
+    obj = np.zeros((grid_size, grid_size, 1), dtype=np.float32)
+    cls = np.zeros((grid_size, grid_size, class_count), dtype=np.float32)
 
     # 一つのCELLに複数の 個体が 入ると 一番大きいボックスを採択
-    best_area = np.zeros((S, S), dtype=np.float32)
+    best_area = np.zeros((grid_size, grid_size), dtype=np.float32)
 
     for c, x, y, w, h in labels_np:
-        cx = int(np.clip(x * S, 0, S - 1))
-        cy = int(np.clip(y * S, 0, S - 1))
+        cx = int(np.clip(x * grid_size, 0, grid_size - 1))
+        cy = int(np.clip(y * grid_size, 0, grid_size - 1))
         area = w * h
         if area <= best_area[cy, cx]:
             continue
         best_area[cy, cx] = area
 
-        x_cell = x * S - cx
-        y_cell = y * S - cy
+        x_cell = x * grid_size - cx
+        y_cell = y * grid_size - cy
 
         box[cy, cx] = [x_cell, y_cell, w, h]
         obj[cy, cx, 0] = 1.0
@@ -49,7 +51,8 @@ def encode_yolov1_targets(labels_np: np.ndarray, S: int, C: int):
 
     return box, obj, cls
 
-def make_dataset(root_dir: str, split: str, img_size: int, S: int, C: int, batch: int, shuffle=True):
+##使えるdatasetを作る
+def make_dataset(root_dir: str, split: str, img_size: int, grid_size: int, class_count: int, batch: int, shuffle=True):
     root = Path(root_dir)
     img_dir = root / "images" / split
     lbl_dir = root / "labels" / split
@@ -77,13 +80,13 @@ def make_dataset(root_dir: str, split: str, img_size: int, S: int, C: int, batch
         # 2) ラベル ロード/エンコード (py_function)
         def _py(lbl_path_bytes):
             labels = parse_label_file(lbl_path_bytes)
-            box, obj, cls = encode_yolov1_targets(labels, S=S, C=C)
+            box, obj, cls = encode_yolov1_targets(labels, grid_size=grid_size, C=class_count)
             return box, obj, cls
 
         box, obj, cls = tf.py_function(_py, inp=[lbl_path], Tout=[tf.float32, tf.float32, tf.float32])
-        box.set_shape((S, S, 4))
-        obj.set_shape((S, S, 1))
-        cls.set_shape((S, S, C))
+        box.set_shape((grid_size, grid_size, 4))
+        obj.set_shape((grid_size, grid_size, 1))
+        cls.set_shape((grid_size, grid_size, class_count))
 
         y_true = {"box": box, "obj": obj, "cls": cls}
         return img, y_true

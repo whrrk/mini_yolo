@@ -29,7 +29,7 @@ def bbox_iou_xywh(box1, box2, eps=1e-7):
     union = area1 + area2 - inter
     return inter / (union + eps)
 
-def yolo_v1_loss(y_true, y_pred, S=7, B=2, C=20,
+def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2,
                  lambda_coord=5.0, lambda_noobj=0.5):
     """
     y_true dict 形態勧奨:
@@ -43,28 +43,28 @@ def yolo_v1_loss(y_true, y_pred, S=7, B=2, C=20,
     true_cls = y_true["cls"]
 
     # pred parsing
-    pred_bbox_conf = y_pred[..., :B*5]                        # (bs,S,S,B*5)
-    pred_cls = y_pred[..., B*5:]                               # (bs,S,S,C)
-    pred_bbox_conf = tf.reshape(pred_bbox_conf, (-1, S, S, B, 5))
-    pred_xywh = pred_bbox_conf[..., 0:4]                       # (bs,S,S,B,4)
-    pred_conf = pred_bbox_conf[..., 4:5]                       # (bs,S,S,B,1)
+    pred_bbox_conf = y_pred[..., :bbox_count*5]                        # (bs,S,S,bbox_count*5)
+    pred_cls = y_pred[..., bbox_count*5:]                               # (bs,S,S,C)
+    pred_bbox_conf = tf.reshape(pred_bbox_conf, (-1, grid_size, grid_size, bbox_count, 5))
+    pred_xywh = pred_bbox_conf[..., 0:4]                       # (bs,S,S,bbox_count,4)
+    pred_conf = pred_bbox_conf[..., 4:5]                       # (bs,S,S,bbox_count,1)
 
     # 責任 bbox 選択: IoUが 一番大きい bbox index
     # true_boxを B個に broadcast: (bs,S,S,1,4)
     true_box_exp = tf.expand_dims(true_box, axis=3)
-    iou = bbox_iou_xywh(pred_xywh, true_box_exp)               # (bs,S,S,B,1) 又は (bs,S,S,B,1)
-    iou = tf.squeeze(iou, axis=-1)                             # (bs,S,S,B)
+    iou = bbox_iou_xywh(pred_xywh, true_box_exp)               # (bs,S,S,bbox_count,1) 又は (bs,S,S,bbox_count,1)
+    iou = tf.squeeze(iou, axis=-1)                             # (bs,S,S,bbox_countB)
 
     best_idx = tf.argmax(iou, axis=-1)                         # (bs,S,S)
-    best_mask = tf.one_hot(best_idx, depth=B, dtype=tf.float32) # (bs,S,S,B)
-    best_mask = tf.expand_dims(best_mask, axis=-1)             # (bs,S,S,B,1)
+    best_mask = tf.one_hot(best_idx, depth=bbox_count, dtype=tf.float32) # (bs,S,S,bbox_count)
+    best_mask = tf.expand_dims(best_mask, axis=-1)             # (bs,S,S,bbox_count,1)
 
     # object mask 拡張
     obj_mask = tf.expand_dims(true_obj, axis=3)                # (bs,S,S,1,1)
-    obj_mask = tf.tile(obj_mask, [1,1,1,B,1])                  # (bs,S,S,B,1)
+    obj_mask = tf.tile(obj_mask, [1,1,1,bbox_count,1])                  # (bs,S,S,bbox_count,1)
 
     # responsible: 個体ある CELLで best bboxだけ 1
-    resp_mask = obj_mask * best_mask                           # (bs,S,S,B,1)
+    resp_mask = obj_mask * best_mask                           # (bs,S,S,bbox_count,1)
 
     # ----- coord loss (responsible bbox only) -----
     # YOLOv1은 w,hに sqrt 適用
@@ -81,13 +81,13 @@ def yolo_v1_loss(y_true, y_pred, S=7, B=2, C=20,
     # responsible bboxも confは IoU targetを 使うこともある
     iou_target = tf.expand_dims(tf.reduce_max(iou, axis=-1), axis=-1)  # (bs,S,S,1)
     iou_target = tf.expand_dims(iou_target, axis=3)                    # (bs,S,S,1,1)
-    iou_target = tf.tile(iou_target, [1,1,1,B,1])                      # (bs,S,S,B,1)
+    iou_target = tf.tile(iou_target, [1,1,1,bbox_count,1])                      # (bs,S,S,bbox_count,1)
     obj_loss = tf.reduce_sum(resp_mask * tf.square(pred_conf - iou_target))
 
     # ----- noobj loss -----
     noobj_mask = (1.0 - resp_mask) * obj_mask  # 個体はあるけど 責任ではない bboxは noobjで(簡単化)
     # CELLに 個体が ない時も noobj 含めると:
-    noobj_mask = (1.0 - resp_mask) * tf.expand_dims(tf.ones_like(true_obj), 3)  # 전체 bbox 대상
+    noobj_mask = (1.0 - resp_mask) * tf.expand_dims(tf.ones_like(true_obj), 3)  # 全体 bbox 対象
     noobj_loss = lambda_noobj * tf.reduce_sum(noobj_mask * tf.square(pred_conf - 0.0))
 
     # ----- class loss (個体あるCELLだけ) -----
