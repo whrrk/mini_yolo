@@ -2,11 +2,11 @@ import tensorflow as tf
 from tensorflow import keras
 from keras import layers
 
-def build_yolov1(input_shape=(320, 320, 3), 
+def build_yolov1(input_shape=(320, 320, 3), #モデルが受け取る画像の解像度とRGBチャネル数を指定
                  grid_size=7, 
                  bbox_count=2, 
                  class_count=20, 
-                 backbone_trainable=False
+                 backbone_trainable=False #事前学習済みの特徴抽出器を固定して、検出ヘッドだけを学習する設定 
                  ):
     
     inp = keras.Input(shape=input_shape)
@@ -15,6 +15,7 @@ def build_yolov1(input_shape=(320, 320, 3),
     base = keras.applications.MobileNetV2(
         include_top=False, weights="imagenet", input_tensor=inp
     )
+
     base.trainable = backbone_trainable
 
     # backbone 出力: (H/32, W/32, ch)  → input=320なら 約 (10,10,1280)

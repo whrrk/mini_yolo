@@ -1,5 +1,6 @@
 import tensorflow as tf
 
+##tensor  = テンソルとは、多次元の数値配列で、画像やYOLOの出力もすべてテンソル
 def xywh_to_xyxy(xywh):
     # xywh: (...,4) where x,y center
     x, y, w, h = tf.split(xywh, 4, axis=-1)
@@ -10,7 +11,7 @@ def xywh_to_xyxy(xywh):
     return tf.concat([x1,y1,x2,y2], axis=-1)
 
 def bbox_iou_xywh(box1, box2, eps=1e-7):
-    # box1: (...,4), box2: (...,4) broadcast 가능
+    # box1: (...,4), box2: (...,4) broadcast 可能
     b1 = xywh_to_xyxy(box1)
     b2 = xywh_to_xyxy(box2)
     b1x1,b1y1,b1x2,b1y2 = tf.split(b1, 4, axis=-1)
@@ -29,6 +30,7 @@ def bbox_iou_xywh(box1, box2, eps=1e-7):
     union = area1 + area2 - inter
     return inter / (union + eps)
 
+# y_true(正解)(data_setが作った), y_pred(予測)(modelで出力)を比較してどれぐらいズレあるかをスカラで作る
 def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2,
                  lambda_coord=5.0, lambda_noobj=0.5):
     """
@@ -63,12 +65,15 @@ def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2,
     obj_mask = tf.expand_dims(true_obj, axis=3)                # (bs,S,S,1,1)
     obj_mask = tf.tile(obj_mask, [1,1,1,bbox_count,1])                  # (bs,S,S,bbox_count,1)
 
-    # responsible: 個体ある CELLで best bboxだけ 1
+    # responsible: 個体ある CELLで best bboxだけ 1　、 AND処理する
+    # obj_maskは「そのセルに物体があるか」、best_maskは「どのボックスが代表か」を示し、その論理積としてresponsible boxを決めています
     resp_mask = obj_mask * best_mask                           # (bs,S,S,bbox_count,1)
 
     # ----- coord loss (responsible bbox only) -----
-    # YOLOv1은 w,hに sqrt 適用
-    pred_xy = pred_xywh[..., 0:2]
+    # YOLOv1は w,hに sqrt 適用
+    # sqrtは小さいバウンディングボックスの誤差をより強く学習させるために使います。
+
+    pred_xy = pred_xywh[..., 0:2] #YOLOが予測したバウンディングボックスの中心座標(x,y)だけを取り出し
     pred_wh = pred_xywh[..., 2:4]
     true_xy = tf.expand_dims(true_box[..., 0:2], axis=3)
     true_wh = tf.expand_dims(true_box[..., 2:4], axis=3)

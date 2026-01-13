@@ -3,6 +3,7 @@ from model import build_yolov1
 from loss import yolo_v1_loss
 from dataset_tf import make_dataset
 
+## 訓練するスクリプト
 ROOT = "data"
 IMG_SIZE = 320
 ##イメージを数セルで分けてから見ているか
