@@ -15,7 +15,8 @@ def decode_yolov1_output(
         bbox_count = 1  # 今のモデル出力は実質B=1
 
     if len(y_pred.shape) == 4:
-        pass  # (S,S,...)  バッチ1 仮定
+        if y_pred.shape[0] == 1:
+            y_pred = y_pred[0]
 
     pred_bbox_conf = y_pred[..., :bbox_count*5]
     pred_cls = y_pred[..., bbox_count*5:]  # (S,S,class_count)
@@ -53,11 +54,26 @@ def decode_yolov1_output(
 
     # expand to bbox_count boxes per cell: (S,S,Bbbox_count)
     cls_id = tf.expand_dims(cls_id, axis=-1)
-    cls_id = tf.tile(cls_id, [1, 1, 1, bbox_count])    
+    cls_id = tf.tile(cls_id, [1, 1, bbox_count])
     cls_score = tf.expand_dims(cls_score, axis=-1)
-    cls_score = tf.tile(cls_score, [1, 1, 1, bbox_count])
+    cls_score = tf.tile(cls_score, [1, 1, bbox_count])
 
     scores = conf * cls_score  # (S,S,bbox_count)
+
+    # keep only best bbox per cell to reduce duplicates
+    best_b = tf.argmax(scores, axis=-1, output_type=tf.int32)  # (S,S)
+    best_mask = tf.one_hot(best_b, bbox_count, dtype=scores.dtype)  # (S,S,B)
+
+    best_mask_4 = tf.expand_dims(best_mask, axis=-1)  # (S,S,B,1)
+    boxes = tf.reduce_sum(boxes * best_mask_4, axis=2)     # (S,S,4)
+    conf = tf.reduce_sum(conf * best_mask, axis=2)         # (S,S)
+    scores = tf.reduce_sum(scores * best_mask, axis=2)     # (S,S)
+    cls_id = tf.reduce_sum(cls_id * tf.cast(best_mask, cls_id.dtype), axis=2)  # (S,S)
+
+    boxes = tf.expand_dims(boxes, axis=2)   # (S,S,1,4)
+    conf = tf.expand_dims(conf, axis=2)     # (S,S,1)
+    scores = tf.expand_dims(scores, axis=2) # (S,S,1)
+    cls_id = tf.expand_dims(cls_id, axis=2) # (S,S,1)
 
     # flatten
     boxes_f = tf.reshape(boxes, (-1, 4))
@@ -66,19 +82,50 @@ def decode_yolov1_output(
     cls_f = tf.reshape(cls_id, (-1,))
 
     # threshold
+    boxes_all = boxes_f
+    scores_all = scores_f
+    conf_all = conf_f
+    cls_all = cls_f
+
     keep = tf.logical_and(scores_f >= conf_thres, conf_f >= obj_thres)
     boxes_f = tf.boolean_mask(boxes_f, keep)
     scores_f = tf.boolean_mask(scores_f, keep)
     cls_f = tf.boolean_mask(cls_f, keep)
 
     if tf.shape(scores_f)[0] == 0:
+        k = tf.minimum(10, tf.shape(scores_all)[0])
+        if k == 0:
+            return boxes_f, scores_f, cls_f
+        topk = tf.math.top_k(scores_all, k=k).indices
+        boxes_f = tf.gather(boxes_all, topk)
+        scores_f = tf.gather(scores_all, topk)
+        cls_f = tf.gather(cls_all, topk)
+
+    # NMS (class-wise)
+    class_count = pred_cls.shape[-1]
+    if class_count is None:
+        class_count = int(tf.shape(pred_cls)[-1])
+
+    boxes_out = []
+    scores_out = []
+    cls_out = []
+    for cid in range(class_count):
+        mask = tf.equal(cls_f, cid)
+        boxes_c = tf.boolean_mask(boxes_f, mask)
+        scores_c = tf.boolean_mask(scores_f, mask)
+        if tf.size(scores_c) == 0:
+            continue
+        selected = tf.image.non_max_suppression(
+            boxes_c, scores_c, max_output_size=300, iou_threshold=iou_thres
+        )
+        boxes_out.append(tf.gather(boxes_c, selected))
+        scores_out.append(tf.gather(scores_c, selected))
+        cls_out.append(tf.fill((tf.size(selected),), cid))
+
+    if not boxes_out:
         return boxes_f, scores_f, cls_f
 
-    # NMS (class-agnostic 簡単バージョン)
-    selected = tf.image.non_max_suppression(
-        boxes_f, scores_f, max_output_size=300, iou_threshold=iou_thres
-    )
-    boxes_n = tf.gather(boxes_f, selected)
-    scores_n = tf.gather(scores_f, selected)
-    cls_n = tf.gather(cls_f, selected)
+    boxes_n = tf.concat(boxes_out, axis=0)
+    scores_n = tf.concat(scores_out, axis=0)
+    cls_n = tf.concat(cls_out, axis=0)
     return boxes_n, scores_n, cls_n

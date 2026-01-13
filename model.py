@@ -6,7 +6,7 @@ def build_yolov1(input_shape=(320, 320, 3), #モデルが受け取る画像の�
                  grid_size=7, 
                  bbox_count=1, 
                  class_count=20, 
-                 backbone_trainable=True #事前学習済みの特徴抽出器を固定して、検出ヘッドだけを学習する設定 
+                 backbone_trainable=False #事前学習済みの特徴抽出器を固定して、検出ヘッドだけを学習する設定 
                  ):
     
     inp = keras.Input(shape=input_shape)

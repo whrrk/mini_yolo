@@ -17,7 +17,7 @@ BBOX_COUNT = 2
 CLASS_COUNT = 4
 
 BATCH = 4  # OOM 発生時 4/2で
-EPOCHS = 2
+EPOCHS = 50
 
 def pack_y_in_dataset(x, y):
     y_p = tf.concat([y["box"], y["obj"], y["cls"]], axis=-1)  # (bs,7,7,9)
@@ -32,7 +32,7 @@ val_ds   = val_ds.map(pack_y_in_dataset,   num_parallel_calls=tf.data.AUTOTUNE)
 # for x, y in train_ds.take(1):
 #     print("obj mean:", float(tf.reduce_mean(y["obj"])), "obj max:", float(tf.reduce_max(y["obj"])))
 
-model = build_yolov1(input_shape=(IMG_SIZE, IMG_SIZE, 3), grid_size=GRID_SIZE, bbox_count=BBOX_COUNT, class_count=CLASS_COUNT, backbone_trainable=True)
+model = build_yolov1(input_shape=(IMG_SIZE, IMG_SIZE, 3), grid_size=GRID_SIZE, bbox_count=BBOX_COUNT, class_count=CLASS_COUNT, backbone_trainable=False)
 
 outs = model.output  # dict: box/obj/cls
 
@@ -42,16 +42,12 @@ if BBOX_COUNT == 1:
     # (None,7,7,1,4)->(None,7,7,4), (None,7,7,1,1)->(None,7,7,1)
     box = layers.Reshape((GRID_SIZE, GRID_SIZE, 4))(outs["box"])
     obj = layers.Reshape((GRID_SIZE, GRID_SIZE, 1))(outs["obj"])
+    y_pred_p = layers.Concatenate(axis=-1)([box, obj, cls])  # (None,7,7,9)
 else:
-    # lossは1box前提なので先頭boxを使う
-    box = layers.Lambda(
-        lambda t: t[..., 0, :], output_shape=(GRID_SIZE, GRID_SIZE, 4)
-    )(outs["box"])
-    obj = layers.Lambda(
-        lambda t: t[..., 0, 0:1], output_shape=(GRID_SIZE, GRID_SIZE, 1)
-    )(outs["obj"])
-
-y_pred_p = layers.Concatenate(axis=-1)([box, obj, cls])  # (None,7,7,9)
+    # B個のbbox/confを全部使って学習する
+    bbox_conf = layers.Concatenate(axis=-1)([outs["box"], outs["obj"]])  # (None,S,S,B,5)
+    bbox_conf = layers.Reshape((GRID_SIZE, GRID_SIZE, BBOX_COUNT * 5))(bbox_conf)
+    y_pred_p = layers.Concatenate(axis=-1)([bbox_conf, cls])  # (None,S,S,B*5+C)
 
 model = tf.keras.Model(inputs=model.input, outputs=y_pred_p)
 ##YOLOは座標回帰と分類が混在するため、勾配スケールの違いに強いAdamが安定して学習

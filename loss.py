@@ -48,8 +48,8 @@ def cell_xywh_to_abs_xywh(xywh, grid_size):
     grid_y = tf.range(grid_size, dtype=xywh.dtype)
     grid_x = tf.range(grid_size, dtype=xywh.dtype)
     yy, xx = tf.meshgrid(grid_y, grid_x, indexing="ij")  # (S,S)
-    xx = tf.reshape(xx, (1, grid_size, grid_size, 1))
-    yy = tf.reshape(yy, (1, grid_size, grid_size, 1))
+    xx = tf.reshape(xx, (1, grid_size, grid_size, 1, 1))
+    yy = tf.reshape(yy, (1, grid_size, grid_size, 1, 1))
     x_abs = (xx + x) / grid_size
     y_abs = (yy + y) / grid_size
     return tf.concat([x_abs, y_abs, w, h], axis=-1)
@@ -69,17 +69,34 @@ def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2, class_count=20,
     true_cls = y_true[..., 5:5+class_count]
 
     # pred parsing
-    pred_box = y_pred[..., 0:4]
-    pred_conf = y_pred[..., 4:5]
-    pred_cls = y_pred[..., 5:5+class_count]                 # (bs,S,S,bbox_count,1)
+    pred_bbox_conf = y_pred[..., :bbox_count * 5]
+    pred_cls = y_pred[..., bbox_count * 5:bbox_count * 5 + class_count]  # (bs,S,S,C)
+    pred_bbox_conf = tf.reshape(
+        pred_bbox_conf, (-1, grid_size, grid_size, bbox_count, 5)
+    )
+    pred_box = pred_bbox_conf[..., 0:4]   # (bs,S,S,B,4)
+    pred_conf = pred_bbox_conf[..., 4:5]  # (bs,S,S,B,1)
 
     # 責任 bbox 選択: IoUが 一番大きい bbox index
-    # true_boxを B個に broadcast: (bs,S,S,1,4)
+    true_box_exp = tf.expand_dims(true_box, axis=3)  # (bs,S,S,1,4)
     pred_abs = cell_xywh_to_abs_xywh(pred_box, grid_size)
-    true_abs = cell_xywh_to_abs_xywh(true_box, grid_size)
-    iou = bbox_iou_xywh(pred_abs, true_abs)               # (bs,S,S,1)
-    obj_loss_pos = tf.reduce_sum(true_obj * bce(true_obj, pred_conf))
-    obj_loss_neg = tf.reduce_sum((1.0 - true_obj) * bce(true_obj, pred_conf))
+    true_abs = cell_xywh_to_abs_xywh(true_box_exp, grid_size)
+    iou = bbox_iou_xywh(pred_abs, true_abs)  # (bs,S,S,B,1)
+    iou = tf.squeeze(iou, axis=-1)          # (bs,S,S,B)
+    best_idx = tf.argmax(iou, axis=-1)      # (bs,S,S)
+    best_mask = tf.one_hot(best_idx, bbox_count, dtype=pred_box.dtype)  # (bs,S,S,B)
+    best_mask = tf.expand_dims(best_mask, axis=-1)  # (bs,S,S,B,1)
+
+    true_obj_exp = tf.expand_dims(true_obj, axis=3)  # (bs,S,S,1,1)
+    true_obj_tiled = tf.tile(true_obj_exp, [1, 1, 1, bbox_count, 1])
+    responsible = best_mask * true_obj_tiled
+
+    obj_bce_pos = bce(tf.ones_like(pred_conf), pred_conf)
+    obj_bce_neg = bce(tf.zeros_like(pred_conf), pred_conf)
+    obj_bce_pos = tf.expand_dims(obj_bce_pos, axis=-1)
+    obj_bce_neg = tf.expand_dims(obj_bce_neg, axis=-1)
+    obj_loss_pos = tf.reduce_sum(responsible * obj_bce_pos)
+    obj_loss_neg = tf.reduce_sum((1.0 - responsible) * obj_bce_neg)
     obj_loss = obj_loss_pos + lambda_noobj * obj_loss_neg
 
     # responsible: 個体ある CELLで best bboxだけ 1　、 AND処理する
@@ -90,11 +107,13 @@ def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2, class_count=20,
 
     pred_xy = pred_box[..., 0:2] #YOLOが予測したバウンディングボックスの中心座標(x,y)だけを取り出し
     pred_wh = pred_box[..., 2:4]
-    true_xy = true_box[..., 0:2]
-    true_wh = true_box[..., 2:4]
+    true_xy = true_box_exp[..., 0:2]
+    true_wh = true_box_exp[..., 2:4]
 
-    coord_loss_xy = tf.reduce_sum(true_obj * tf.square(pred_xy - true_xy))
-    coord_loss_wh = tf.reduce_sum(true_obj * tf.square(tf.sqrt(pred_wh + 1e-9) - tf.sqrt(true_wh + 1e-9)))
+    coord_loss_xy = tf.reduce_sum(responsible * tf.square(pred_xy - true_xy))
+    coord_loss_wh = tf.reduce_sum(
+        responsible * tf.square(tf.sqrt(pred_wh + 1e-9) - tf.sqrt(true_wh + 1e-9))
+    )
     coord_loss = lambda_coord * (coord_loss_xy + coord_loss_wh)
 
     # ----- noobj loss -----
