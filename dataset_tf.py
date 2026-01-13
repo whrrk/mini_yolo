@@ -5,7 +5,13 @@ from pathlib import Path
 ## parsing label
 def parse_label_file(label_path: str):
     # label_path: bytes -> str
-    label_path = label_path.decode("utf-8")
+    if hasattr(label_path, "numpy"):           # tf.Tensorに場合
+        label_path = label_path.numpy()        # bytesに変換され (ほとんど b"...")
+    if isinstance(label_path, bytes):
+        label_path = label_path.decode("utf-8")
+    elif not isinstance(label_path, str):
+        label_path = str(label_path)
+
     if not Path(label_path).exists():
         return np.zeros((0, 5), dtype=np.float32)
 
@@ -80,7 +86,7 @@ def make_dataset(root_dir: str, split: str, img_size: int, grid_size: int, class
         # 2) ラベル ロード/エンコード (py_function)
         def _py(lbl_path_bytes):
             labels = parse_label_file(lbl_path_bytes)
-            box, obj, cls = encode_yolov1_targets(labels, grid_size=grid_size, C=class_count)
+            box, obj, cls = encode_yolov1_targets(labels, grid_size=grid_size, class_count=class_count)
             return box, obj, cls
 
         box, obj, cls = tf.py_function(_py, inp=[lbl_path], Tout=[tf.float32, tf.float32, tf.float32])

@@ -4,9 +4,9 @@ from keras import layers
 
 def build_yolov1(input_shape=(320, 320, 3), #モデルが受け取る画像の解像度とRGBチャネル数を指定
                  grid_size=7, 
-                 bbox_count=2, 
+                 bbox_count=1, 
                  class_count=20, 
-                 backbone_trainable=False #事前学習済みの特徴抽出器を固定して、検出ヘッドだけを学習する設定 
+                 backbone_trainable=True #事前学習済みの特徴抽出器を固定して、検出ヘッドだけを学習する設定 
                  ):
     
     inp = keras.Input(shape=input_shape)
@@ -28,7 +28,7 @@ def build_yolov1(input_shape=(320, 320, 3), #モデルが受け取る画像の�
     x = layers.Conv2D(256, 1, padding="same", activation="relu")(x)
 
     # (grid_size,grid_size,channels)に 強制 変換
-    x = tf.image.resize(x, (grid_size, grid_size), method="bilinear")
+    x = layers.Resizing(grid_size, grid_size, interpolation="bilinear")(x)
 
     # 最終 予測 logits
     pred = layers.Conv2D(bbox_count*5 + class_count, 1, padding="same")(x)  # (grid_size,grid_size,bbox_count*5+class_count)
@@ -40,21 +40,25 @@ def build_yolov1(input_shape=(320, 320, 3), #モデルが受け取る画像の�
     cls_logits = pred[..., bbox_count*5:]
 
     # bbox_conf reshape: (grid_size,grid_size,bbox_count,5)
-    bbox_conf = tf.reshape(bbox_conf, (-1, grid_size, grid_size, bbox_count, 5))
-
+    bbox_conf = layers.Reshape((grid_size, grid_size, bbox_count, 5))(bbox_conf)
     # x,y -> sigmoid
-    xy = tf.sigmoid(bbox_conf[..., 0:2])
-    # w,h -> softplus (正数 安定)
-    wh = tf.nn.softplus(bbox_conf[..., 2:4])
+    xy = layers.Activation("sigmoid")(bbox_conf[..., 0:2])
+
+    # w,h -> sigmoid (0..1 に制約)
+    wh = layers.Activation("sigmoid")(bbox_conf[..., 2:4])
+
     # conf -> sigmoid
-    conf = tf.sigmoid(bbox_conf[..., 4:5])
+    conf = layers.Activation("sigmoid")(bbox_conf[..., 4:5])
 
+    obj  = layers.Activation("sigmoid", name="obj")(bbox_conf[..., 4:5])   # (S,S,B,1)
+    box  = layers.Concatenate(axis=-1, name="box")([xy, wh])               # (S,S,B,4)
+
+    cls  = layers.Softmax(axis=-1, name="cls")(cls_logits)                 # (S,S,C)
     # class -> softmax
-    cls = tf.nn.softmax(cls_logits, axis=-1)
+    # (..,bbox_count,5)
+    bbox_conf_act = layers.Concatenate(axis=-1)([xy, wh, conf])
 
-    # 足す: (grid_size,grid_size,bbox_count,5) + (grid_size,grid_size,class_count) を　また (grid_size,grid_size,bbox_count*5+class_count) 形態に
-    bbox_conf_act = tf.concat([xy, wh, conf], axis=-1)               # (grid_size,grid_size,bbox_count,5)
-    bbox_conf_act = tf.reshape(bbox_conf_act, (-1, grid_size, grid_size, bbox_count*5))       # (grid_size,grid_size,bbox_count*5)
-    out = tf.concat([bbox_conf_act, cls], axis=-1)                   # (grid_size,grid_size,bbox_count*5+class_count)
+    # (.., bbox_count*5)  ※ 配置側は自動
+    bbox_conf_act = layers.Reshape((grid_size, grid_size, bbox_count * 5))(bbox_conf_act)
 
-    return keras.Model(inp, out)
+    return keras.Model(inp, {"box": box, "obj": obj, "cls": cls})

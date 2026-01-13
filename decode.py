@@ -1,31 +1,38 @@
 import tensorflow as tf
 
-def decode_yolov1_output(y_pred, S=7, bbox_count=2, conf_thres=0.25, iou_thres=0.5):
+def decode_yolov1_output(y_pred, grid_size=7, bbox_count=1, conf_thres=0.25, iou_thres=0.5):
     """
     y_pred: (1,S,S,B*5+class_count) 又は (S,S,B*5+class_count)
     return: boxes (N,4) in normalized xyxy, scores (N,), class_ids (N,)
     """
+    if isinstance(y_pred, dict):
+        box = tf.squeeze(y_pred["box"], axis=3)  # (bs,S,S,4)
+        obj = tf.squeeze(y_pred["obj"], axis=3)  # (bs,S,S,1)
+        cls = y_pred["cls"]                      # (bs,S,S,C)
+        y_pred = tf.concat([box, obj, cls], axis=-1)  # (bs,S,S,5+C)
+        bbox_count = 1  # 今のモデル出力は実質B=1
+
     if len(y_pred.shape) == 4:
-        y_pred = y_pred[0]  # (S,S,...)  バッチ1 仮定
+        pass  # (S,S,...)  バッチ1 仮定
 
     pred_bbox_conf = y_pred[..., :bbox_count*5]
     pred_cls = y_pred[..., bbox_count*5:]  # (S,S,class_count)
 
-    pred_bbox_conf = tf.reshape(pred_bbox_conf, (S, S, bbox_count, 5))
+    pred_bbox_conf = tf.reshape(pred_bbox_conf, (grid_size, grid_size, bbox_count, 5))
     xy = pred_bbox_conf[..., 0:2]         # (S,S,bbox_count,2) 0~1
     wh = pred_bbox_conf[..., 2:4]         # (S,S,bbox_count,2) positive
     conf = pred_bbox_conf[..., 4]         # (S,S,bbox_count)
 
     # grid offsets
-    grid_y = tf.range(S, dtype=tf.float32)
-    grid_x = tf.range(S, dtype=tf.float32)
+    grid_y = tf.range(grid_size, dtype=tf.float32)
+    grid_x = tf.range(grid_size, dtype=tf.float32)
     yy, xx = tf.meshgrid(grid_y, grid_x, indexing="ij")  # (S,S)
     xx = tf.expand_dims(xx, axis=-1)  # (S,S,1)
     yy = tf.expand_dims(yy, axis=-1)  # (S,S,1)
 
     # abs center (normalized 0~1)
-    x_abs = (xx + xy[..., 0]) / S
-    y_abs = (yy + xy[..., 1]) / S
+    x_abs = (xx + xy[..., 0]) / grid_size
+    y_abs = (yy + xy[..., 1]) / grid_size
     w_abs = wh[..., 0]
     h_abs = wh[..., 1]
 
@@ -44,9 +51,9 @@ def decode_yolov1_output(y_pred, S=7, bbox_count=2, conf_thres=0.25, iou_thres=0
 
     # expand to bbox_count boxes per cell: (S,S,Bbbox_count)
     cls_id = tf.expand_dims(cls_id, axis=-1)
-    cls_id = tf.tile(cls_id, [1,1,bbox_count])
+    cls_id = tf.tile(cls_id, [1, 1, 1, bbox_count])    
     cls_score = tf.expand_dims(cls_score, axis=-1)
-    cls_score = tf.tile(cls_score, [1,1,bbox_count])
+    cls_score = tf.tile(cls_score, [1, 1, 1, bbox_count])
 
     scores = conf * cls_score  # (S,S,bbox_count)
 

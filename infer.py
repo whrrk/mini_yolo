@@ -13,6 +13,7 @@ CLASS_COUNT=4
 NAMES = ["buffalo","elephant","rhino","zebra"]
 
 model = build_yolov1((IMG_SIZE,IMG_SIZE,3), grid_size=GRID_SIZE, bbox_count=BBOX_COUNT, class_count=CLASS_COUNT, backbone_trainable=False)
+##学習中性能が良かった瞬間の神経網重みをmini_yolo.weights.h5に保存する”
 model.load_weights("checkpoints/mini_yolo.weights.h5")
 
 def preprocess(path):
@@ -23,12 +24,41 @@ def preprocess(path):
     img = img.astype(np.float32)/255.0
     return bgr, img, (h,w)
 
-bgr, img, (H,W) = preprocess("african-wildlife/images/test/000000.jpg")
+bgr, img, (H,W) = preprocess("data/images/val/4 (370).jpg")
 
-y_pred = model(img[None, ...], training=False).numpy()
-boxes, scores, cls_ids = decode_yolov1_output(y_pred, grid_size=GRID_SIZE, bbox_count=BBOX_COUNT, conf_thres=0.25, iou_thres=0.5)
+y_pred = model(img[None, ...], training=False)
 
-# normalized xyxy -> pixel
+if BBOX_COUNT == 1:
+    box = tf.squeeze(y_pred["box"], axis=3)   # (1,S,S,4)
+    obj = tf.squeeze(y_pred["obj"], axis=3)   # (1,S,S,1)
+    cls = y_pred["cls"]                       # (1,S,S,C)
+    y_pred_packed = tf.concat([box, obj, cls], axis=-1)  # (1,S,S,5+C)
+else:
+    box = y_pred["box"]  # (1,S,S,B,4)
+    obj = y_pred["obj"]  # (1,S,S,B,1)
+    cls = y_pred["cls"]  # (1,S,S,C)
+    bbox_conf = tf.concat([box, obj], axis=-1)  # (1,S,S,B,5)
+    bbox_conf = tf.reshape(
+        bbox_conf, (1, GRID_SIZE, GRID_SIZE, BBOX_COUNT * 5)
+    )
+    y_pred_packed = tf.concat([bbox_conf, cls], axis=-1)  # (1,S,S,B*5+C)
+
+print("pred box min/max:", float(tf.reduce_min(box)), float(tf.reduce_max(box)))
+print("pred obj min/max:", float(tf.reduce_min(obj)), float(tf.reduce_max(obj)))
+print("pred cls min/max:", float(tf.reduce_min(cls)), float(tf.reduce_max(cls)))
+
+boxes, scores, cls_ids = decode_yolov1_output(
+    y_pred_packed,
+    grid_size=GRID_SIZE,
+    bbox_count=BBOX_COUNT,
+    conf_thres=0.05,
+    iou_thres=0.5
+)
+
+print("boxes shape:", boxes.shape)
+print("scores shape:", scores.shape)
+print("max score:", float(tf.reduce_max(scores)) if tf.size(scores) > 0 else "no scores")
+
 boxes = boxes.numpy()
 scores = scores.numpy()
 cls_ids = cls_ids.numpy().astype(int)

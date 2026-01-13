@@ -1,5 +1,17 @@
 import tensorflow as tf
 
+bce = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction="none")
+cce = tf.keras.losses.CategoricalCrossentropy(from_logits=False, reduction="none")
+
+def box_loss(y_true, y_pred):
+    return tf.reduce_mean(tf.square(y_true - y_pred))
+
+def obj_loss(y_true, y_pred):
+    return tf.reduce_mean(tf.square(y_true - y_pred))
+
+def cls_loss(y_true, y_pred):
+    return tf.reduce_mean(tf.square(y_true - y_pred))
+
 ##tensor  = テンソルとは、多次元の数値配列で、画像やYOLOの出力もすべてテンソル
 def xywh_to_xyxy(xywh):
     # xywh: (...,4) where x,y center
@@ -30,74 +42,71 @@ def bbox_iou_xywh(box1, box2, eps=1e-7):
     union = area1 + area2 - inter
     return inter / (union + eps)
 
+def cell_xywh_to_abs_xywh(xywh, grid_size):
+    # xywh: (...,4) with x,y in cell coords (0~1), w,h in image coords (0~1)
+    x, y, w, h = tf.split(xywh, 4, axis=-1)
+    grid_y = tf.range(grid_size, dtype=xywh.dtype)
+    grid_x = tf.range(grid_size, dtype=xywh.dtype)
+    yy, xx = tf.meshgrid(grid_y, grid_x, indexing="ij")  # (S,S)
+    xx = tf.reshape(xx, (1, grid_size, grid_size, 1))
+    yy = tf.reshape(yy, (1, grid_size, grid_size, 1))
+    x_abs = (xx + x) / grid_size
+    y_abs = (yy + y) / grid_size
+    return tf.concat([x_abs, y_abs, w, h], axis=-1)
+
 # y_true(正解)(data_setが作った), y_pred(予測)(modelで出力)を比較してどれぐらいズレあるかをスカラで作る
-def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2,
-                 lambda_coord=5.0, lambda_noobj=0.5):
+def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2, class_count=20,
+                 lambda_coord=5.0, lambda_noobj=0.1):
     """
     y_true dict 形態勧奨:
       y_true["box"] : (bs,S,S,4)  xywh (cell-relative, 0~1)
-      y_true["obj"] : (bs,S,S,1)  0/1
+      y_true["obj"] bbox_count: (bs,S,S,1)  0/bbox_count
       y_true["cls"] : (bs,S,S,C)  one-hot
     """
 
-    true_box = y_true["box"]
-    true_obj = y_true["obj"]
-    true_cls = y_true["cls"]
+    true_box = y_true[..., 0:4]
+    true_obj = y_true[..., 4:5]
+    true_cls = y_true[..., 5:5+class_count]
 
     # pred parsing
-    pred_bbox_conf = y_pred[..., :bbox_count*5]                        # (bs,S,S,bbox_count*5)
-    pred_cls = y_pred[..., bbox_count*5:]                               # (bs,S,S,C)
-    pred_bbox_conf = tf.reshape(pred_bbox_conf, (-1, grid_size, grid_size, bbox_count, 5))
-    pred_xywh = pred_bbox_conf[..., 0:4]                       # (bs,S,S,bbox_count,4)
-    pred_conf = pred_bbox_conf[..., 4:5]                       # (bs,S,S,bbox_count,1)
+    pred_box = y_pred[..., 0:4]
+    pred_conf = y_pred[..., 4:5]
+    pred_cls = y_pred[..., 5:5+class_count]                 # (bs,S,S,bbox_count,1)
 
     # 責任 bbox 選択: IoUが 一番大きい bbox index
     # true_boxを B個に broadcast: (bs,S,S,1,4)
-    true_box_exp = tf.expand_dims(true_box, axis=3)
-    iou = bbox_iou_xywh(pred_xywh, true_box_exp)               # (bs,S,S,bbox_count,1) 又は (bs,S,S,bbox_count,1)
-    iou = tf.squeeze(iou, axis=-1)                             # (bs,S,S,bbox_countB)
-
-    best_idx = tf.argmax(iou, axis=-1)                         # (bs,S,S)
-    best_mask = tf.one_hot(best_idx, depth=bbox_count, dtype=tf.float32) # (bs,S,S,bbox_count)
-    best_mask = tf.expand_dims(best_mask, axis=-1)             # (bs,S,S,bbox_count,1)
-
-    # object mask 拡張
-    obj_mask = tf.expand_dims(true_obj, axis=3)                # (bs,S,S,1,1)
-    obj_mask = tf.tile(obj_mask, [1,1,1,bbox_count,1])                  # (bs,S,S,bbox_count,1)
+    pred_abs = cell_xywh_to_abs_xywh(pred_box, grid_size)
+    true_abs = cell_xywh_to_abs_xywh(true_box, grid_size)
+    iou = bbox_iou_xywh(pred_abs, true_abs)               # (bs,S,S,1)
+    obj_loss = tf.reduce_sum(true_obj * tf.square(pred_conf - iou)) # (bs,S,S,bbox_countB)
 
     # responsible: 個体ある CELLで best bboxだけ 1　、 AND処理する
     # obj_maskは「そのセルに物体があるか」、best_maskは「どのボックスが代表か」を示し、その論理積としてresponsible boxを決めています
-    resp_mask = obj_mask * best_mask                           # (bs,S,S,bbox_count,1)
-
     # ----- coord loss (responsible bbox only) -----
     # YOLOv1は w,hに sqrt 適用
     # sqrtは小さいバウンディングボックスの誤差をより強く学習させるために使います。
 
-    pred_xy = pred_xywh[..., 0:2] #YOLOが予測したバウンディングボックスの中心座標(x,y)だけを取り出し
-    pred_wh = pred_xywh[..., 2:4]
-    true_xy = tf.expand_dims(true_box[..., 0:2], axis=3)
-    true_wh = tf.expand_dims(true_box[..., 2:4], axis=3)
+    pred_xy = pred_box[..., 0:2] #YOLOが予測したバウンディングボックスの中心座標(x,y)だけを取り出し
+    pred_wh = pred_box[..., 2:4]
+    true_xy = true_box[..., 0:2]
+    true_wh = true_box[..., 2:4]
 
-    coord_loss_xy = tf.reduce_sum(resp_mask * tf.square(pred_xy - true_xy))
-    coord_loss_wh = tf.reduce_sum(resp_mask * tf.square(tf.sqrt(pred_wh + 1e-9) - tf.sqrt(true_wh + 1e-9)))
+    coord_loss_xy = tf.reduce_sum(true_obj * tf.square(pred_xy - true_xy))
+    coord_loss_wh = tf.reduce_sum(true_obj * tf.square(tf.sqrt(pred_wh + 1e-9) - tf.sqrt(true_wh + 1e-9)))
     coord_loss = lambda_coord * (coord_loss_xy + coord_loss_wh)
 
-    # ----- objectness loss -----
-    # responsible bboxも confは IoU targetを 使うこともある
-    iou_target = tf.expand_dims(tf.reduce_max(iou, axis=-1), axis=-1)  # (bs,S,S,1)
-    iou_target = tf.expand_dims(iou_target, axis=3)                    # (bs,S,S,1,1)
-    iou_target = tf.tile(iou_target, [1,1,1,bbox_count,1])                      # (bs,S,S,bbox_count,1)
-    obj_loss = tf.reduce_sum(resp_mask * tf.square(pred_conf - iou_target))
-
     # ----- noobj loss -----
-    noobj_mask = (1.0 - resp_mask) * obj_mask  # 個体はあるけど 責任ではない bboxは noobjで(簡単化)
+    # 個体はあるけど 責任ではない bboxは noobjで(簡単化)
     # CELLに 個体が ない時も noobj 含めると:
-    noobj_mask = (1.0 - resp_mask) * tf.expand_dims(tf.ones_like(true_obj), 3)  # 全体 bbox 対象
+    noobj_mask = (1.0 - true_obj)
     noobj_loss = lambda_noobj * tf.reduce_sum(noobj_mask * tf.square(pred_conf - 0.0))
 
     # ----- class loss (個体あるCELLだけ) -----
     # pred_cls: (bs,S,S,C)
     class_loss = tf.reduce_sum(true_obj * tf.reduce_sum(tf.square(pred_cls - true_cls), axis=-1, keepdims=True))
 
+    ##ロースの正規化
     total = coord_loss + obj_loss + noobj_loss + class_loss
-    return total
+    denom = tf.cast(tf.shape(y_true)[0] * grid_size * grid_size, total.dtype)
+    denom = tf.maximum(denom, 1.0)
+    return total / denom
