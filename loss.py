@@ -56,7 +56,7 @@ def cell_xywh_to_abs_xywh(xywh, grid_size):
 
 # y_true(正解)(data_setが作った), y_pred(予測)(modelで出力)を比較してどれぐらいズレあるかをスカラで作る
 def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2, class_count=20,
-                 lambda_coord=5.0, lambda_noobj=0.1):
+                 lambda_coord=5.0, lambda_noobj=0.05):
     """
     y_true dict 形態勧奨:
       y_true["box"] : (bs,S,S,4)  xywh (cell-relative, 0~1)
@@ -78,7 +78,9 @@ def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2, class_count=20,
     pred_abs = cell_xywh_to_abs_xywh(pred_box, grid_size)
     true_abs = cell_xywh_to_abs_xywh(true_box, grid_size)
     iou = bbox_iou_xywh(pred_abs, true_abs)               # (bs,S,S,1)
-    obj_loss = tf.reduce_sum(true_obj * tf.square(pred_conf - iou)) # (bs,S,S,bbox_countB)
+    obj_loss_pos = tf.reduce_sum(true_obj * bce(true_obj, pred_conf))
+    obj_loss_neg = tf.reduce_sum((1.0 - true_obj) * bce(true_obj, pred_conf))
+    obj_loss = obj_loss_pos + lambda_noobj * obj_loss_neg
 
     # responsible: 個体ある CELLで best bboxだけ 1　、 AND処理する
     # obj_maskは「そのセルに物体があるか」、best_maskは「どのボックスが代表か」を示し、その論理積としてresponsible boxを決めています
@@ -98,8 +100,7 @@ def yolo_v1_loss(y_true, y_pred, grid_size=7, bbox_count=2, class_count=20,
     # ----- noobj loss -----
     # 個体はあるけど 責任ではない bboxは noobjで(簡単化)
     # CELLに 個体が ない時も noobj 含めると:
-    noobj_mask = (1.0 - true_obj)
-    noobj_loss = lambda_noobj * tf.reduce_sum(noobj_mask * tf.square(pred_conf - 0.0))
+    noobj_loss = 0.0
 
     # ----- class loss (個体あるCELLだけ) -----
     # pred_cls: (bs,S,S,C)

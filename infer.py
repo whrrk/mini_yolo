@@ -12,7 +12,7 @@ CLASS_COUNT=4
 # クラスの名前 - yamlの名前
 NAMES = ["buffalo","elephant","rhino","zebra"]
 
-model = build_yolov1((IMG_SIZE,IMG_SIZE,3), grid_size=GRID_SIZE, bbox_count=BBOX_COUNT, class_count=CLASS_COUNT, backbone_trainable=False)
+model = build_yolov1((IMG_SIZE,IMG_SIZE,3), grid_size=GRID_SIZE, bbox_count=BBOX_COUNT, class_count=CLASS_COUNT, backbone_trainable=True)
 ##学習中性能が良かった瞬間の神経網重みをmini_yolo.weights.h5に保存する”
 model.load_weights("checkpoints/mini_yolo.weights.h5")
 
@@ -24,7 +24,7 @@ def preprocess(path):
     img = img.astype(np.float32)/255.0
     return bgr, img, (h,w)
 
-bgr, img, (H,W) = preprocess("data/images/val/4 (370).jpg")
+bgr, img, (H,W) = preprocess("data/images/test/1 (74).jpg")
 
 y_pred = model(img[None, ...], training=False)
 
@@ -51,8 +51,9 @@ boxes, scores, cls_ids = decode_yolov1_output(
     y_pred_packed,
     grid_size=GRID_SIZE,
     bbox_count=BBOX_COUNT,
-    conf_thres=0.05,
-    iou_thres=0.5
+    conf_thres=0.01,
+    iou_thres=0.5,
+    obj_thres=0.5
 )
 
 print("boxes shape:", boxes.shape)

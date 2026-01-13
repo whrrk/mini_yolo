@@ -1,6 +1,8 @@
 import tensorflow as tf
 
-def decode_yolov1_output(y_pred, grid_size=7, bbox_count=1, conf_thres=0.25, iou_thres=0.5):
+def decode_yolov1_output(
+    y_pred, grid_size=7, bbox_count=1, conf_thres=0.25, iou_thres=0.5, obj_thres=0.1
+):
     """
     y_pred: (1,S,S,B*5+class_count) 又は (S,S,B*5+class_count)
     return: boxes (N,4) in normalized xyxy, scores (N,), class_ids (N,)
@@ -59,11 +61,12 @@ def decode_yolov1_output(y_pred, grid_size=7, bbox_count=1, conf_thres=0.25, iou
 
     # flatten
     boxes_f = tf.reshape(boxes, (-1, 4))
+    conf_f = tf.reshape(conf, (-1,))
     scores_f = tf.reshape(scores, (-1,))
     cls_f = tf.reshape(cls_id, (-1,))
 
     # threshold
-    keep = scores_f >= conf_thres
+    keep = tf.logical_and(scores_f >= conf_thres, conf_f >= obj_thres)
     boxes_f = tf.boolean_mask(boxes_f, keep)
     scores_f = tf.boolean_mask(scores_f, keep)
     cls_f = tf.boolean_mask(cls_f, keep)
