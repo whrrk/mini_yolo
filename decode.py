@@ -1,7 +1,15 @@
 import tensorflow as tf
 
 def decode_yolov1_output(
-    y_pred, grid_size=7, bbox_count=1, conf_thres=0.25, iou_thres=0.5, obj_thres=0.1
+    y_pred,
+    grid_size=7,
+    bbox_count=1,
+    conf_thres=0.25,
+    iou_thres=0.5,
+    obj_thres=0.1,
+    class_agnostic_nms=False,
+    return_pre_nms=False,
+    max_output_size=300,
 ):
     """
     y_pred: (1,S,S,B*5+class_count) 又は (S,S,B*5+class_count)
@@ -45,7 +53,8 @@ def decode_yolov1_output(
     x2 = x_abs + w_abs / 2.0
     y2 = y_abs + h_abs / 2.0
 
-    boxes = tf.stack([x1, y1, x2, y2], axis=-1)  # (S,S,bbox_count,4)
+    boxes_xyxy = tf.stack([x1, y1, x2, y2], axis=-1)  # (S,S,bbox_count,4)
+    boxes_nms = tf.stack([y1, x1, y2, x2], axis=-1)   # (S,S,bbox_count,4)
 
     # class scores
     cls_prob = pred_cls  # (S,S,class_count) already softmax
@@ -65,18 +74,21 @@ def decode_yolov1_output(
     best_mask = tf.one_hot(best_b, bbox_count, dtype=scores.dtype)  # (S,S,B)
 
     best_mask_4 = tf.expand_dims(best_mask, axis=-1)  # (S,S,B,1)
-    boxes = tf.reduce_sum(boxes * best_mask_4, axis=2)     # (S,S,4)
+    boxes_xyxy = tf.reduce_sum(boxes_xyxy * best_mask_4, axis=2)     # (S,S,4)
+    boxes_nms = tf.reduce_sum(boxes_nms * best_mask_4, axis=2)        # (S,S,4)
     conf = tf.reduce_sum(conf * best_mask, axis=2)         # (S,S)
     scores = tf.reduce_sum(scores * best_mask, axis=2)     # (S,S)
     cls_id = tf.reduce_sum(cls_id * tf.cast(best_mask, cls_id.dtype), axis=2)  # (S,S)
 
-    boxes = tf.expand_dims(boxes, axis=2)   # (S,S,1,4)
+    boxes_xyxy = tf.expand_dims(boxes_xyxy, axis=2)   # (S,S,1,4)
+    boxes_nms = tf.expand_dims(boxes_nms, axis=2)     # (S,S,1,4)
     conf = tf.expand_dims(conf, axis=2)     # (S,S,1)
     scores = tf.expand_dims(scores, axis=2) # (S,S,1)
     cls_id = tf.expand_dims(cls_id, axis=2) # (S,S,1)
 
     # flatten
-    boxes_f = tf.reshape(boxes, (-1, 4))
+    boxes_f = tf.reshape(boxes_xyxy, (-1, 4))
+    boxes_nms_f = tf.reshape(boxes_nms, (-1, 4))
     conf_f = tf.reshape(conf, (-1,))
     scores_f = tf.reshape(scores, (-1,))
     cls_f = tf.reshape(cls_id, (-1,))
@@ -89,6 +101,7 @@ def decode_yolov1_output(
 
     keep = tf.logical_and(scores_f >= conf_thres, conf_f >= obj_thres)
     boxes_f = tf.boolean_mask(boxes_f, keep)
+    boxes_nms_f = tf.boolean_mask(boxes_nms_f, keep)
     scores_f = tf.boolean_mask(scores_f, keep)
     cls_f = tf.boolean_mask(cls_f, keep)
 
@@ -98,13 +111,26 @@ def decode_yolov1_output(
             return boxes_f, scores_f, cls_f
         topk = tf.math.top_k(scores_all, k=k).indices
         boxes_f = tf.gather(boxes_all, topk)
+        boxes_nms_f = tf.gather(boxes_nms_f, topk)
         scores_f = tf.gather(scores_all, topk)
         cls_f = tf.gather(cls_all, topk)
 
-    # NMS (class-wise)
+    if return_pre_nms:
+        return boxes_f, scores_f, cls_f
+
+    # NMS (class-wise or class-agnostic)
     class_count = pred_cls.shape[-1]
     if class_count is None:
         class_count = int(tf.shape(pred_cls)[-1])
+
+    if class_agnostic_nms:
+        selected = tf.image.non_max_suppression(
+            boxes_nms_f, scores_f, max_output_size=max_output_size, iou_threshold=iou_thres
+        )
+        boxes_n = tf.gather(boxes_f, selected)
+        scores_n = tf.gather(scores_f, selected)
+        cls_n = tf.gather(cls_f, selected)
+        return boxes_n, scores_n, cls_n
 
     boxes_out = []
     scores_out = []
@@ -112,11 +138,12 @@ def decode_yolov1_output(
     for cid in range(class_count):
         mask = tf.equal(cls_f, cid)
         boxes_c = tf.boolean_mask(boxes_f, mask)
+        boxes_nms_c = tf.boolean_mask(boxes_nms_f, mask)
         scores_c = tf.boolean_mask(scores_f, mask)
         if tf.size(scores_c) == 0:
             continue
         selected = tf.image.non_max_suppression(
-            boxes_c, scores_c, max_output_size=300, iou_threshold=iou_thres
+            boxes_nms_c, scores_c, max_output_size=max_output_size, iou_threshold=iou_thres
         )
         boxes_out.append(tf.gather(boxes_c, selected))
         scores_out.append(tf.gather(scores_c, selected))

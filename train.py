@@ -8,16 +8,16 @@ from dataset_tf import make_dataset
 ROOT = "data"
 IMG_SIZE = 320
 ##YOLOがイメージを数セルで分けてから見ているか
-GRID_SIZE = 7
+GRID_SIZE = 14
 ##1つのグリッドセルが予測するバウンディングボックス候補の数
 ##画像の中に物体がいくらぐらいいるのかによる
-BBOX_COUNT = 2
+BBOX_COUNT = 1
 
 # african-wildlifeは 普通 4クラス(仮定).  yaml의 ncが正解.
 CLASS_COUNT = 4
 
 BATCH = 4  # OOM 発生時 4/2で
-EPOCHS = 50
+EPOCHS = 2
 
 def pack_y_in_dataset(x, y):
     y_p = tf.concat([y["box"], y["obj"], y["cls"]], axis=-1)  # (bs,7,7,9)

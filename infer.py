@@ -6,8 +6,17 @@ from decode import decode_yolov1_output  # decode関数
 
 IMG_SIZE = 320
 GRID_SIZE=7; 
-BBOX_COUNT=2; 
+BBOX_COUNT=1; 
 CLASS_COUNT=4
+##最終スコアの下限
+CONF_THRES = 0.5
+##物体がある確率
+OBJ_THRES = 0.5
+##同じ物体とみなして消す
+IOU_THRES = 0.6
+DEBUG_DRAW_PRE_NMS = True
+##NMS= 重なった複数の箱から高いものだけを残す
+NMS_MAX_OUTPUT = 200
 
 # クラスの名前 - yamlの名前
 NAMES = ["buffalo","elephant","rhino","zebra"]
@@ -24,7 +33,7 @@ def preprocess(path):
     img = img.astype(np.float32)/255.0
     return bgr, img, (h,w)
 
-bgr, img, (H,W) = preprocess("data/images/test/3 (213).jpg")
+bgr, img, (H,W) = preprocess("data/images/train/4 (151).jpg")
 
 y_pred = model(img[None, ...], training=False)
 
@@ -51,14 +60,27 @@ boxes, scores, cls_ids = decode_yolov1_output(
     y_pred_packed,
     grid_size=GRID_SIZE,
     bbox_count=BBOX_COUNT,
-    conf_thres=0.1,
-    iou_thres=0.5,
-    obj_thres=0.1
+    conf_thres=CONF_THRES,
+    iou_thres=IOU_THRES,
+    obj_thres=OBJ_THRES,
+    class_agnostic_nms=False,
+    max_output_size=NMS_MAX_OUTPUT
 )
 
-print("boxes shape:", boxes.shape)
-print("scores shape:", scores.shape)
-print("max score:", float(tf.reduce_max(scores)) if tf.size(scores) > 0 else "no scores")
+if DEBUG_DRAW_PRE_NMS:
+    pre_boxes, pre_scores, pre_cls_ids = decode_yolov1_output(
+        y_pred_packed,
+        grid_size=GRID_SIZE,
+        bbox_count=BBOX_COUNT,
+        conf_thres=CONF_THRES,
+        iou_thres=IOU_THRES,
+        obj_thres=OBJ_THRES,
+        class_agnostic_nms=False,
+        return_pre_nms=True,
+        max_output_size=NMS_MAX_OUTPUT
+    )
+
+
 
 boxes = boxes.numpy()
 scores = scores.numpy()
@@ -69,8 +91,44 @@ for (x1,y1,x2,y2), sc, cid in zip(boxes, scores, cls_ids):
     y1 = int(np.clip(y1*H, 0, H-1))
     x2 = int(np.clip(x2*W, 0, W-1))
     y2 = int(np.clip(y2*H, 0, H-1))
+
+    label = f"{NAMES[cid]} {sc:.2f}"
+
+    (font_w, font_h), baseline = cv2.getTextSize(
+        label, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3
+    )
     cv2.rectangle(bgr, (x1,y1), (x2,y2), (0,255,0), 2)
-    cv2.putText(bgr, f"{NAMES[cid]} {sc:.2f}", (x1, max(0,y1-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+    # cv2.rectangle(
+    #     bgr,
+    #     (x1, y1 - font_h - 15),
+    #     (x1 + font_w + 10, y1),
+    #     (0, 255, 0),
+    #     -1
+    # )
+    cv2.putText(
+        bgr,
+        label,
+        (x1 + 5, y1 - 5),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.2,
+        (0, 0, 0),
+        3
+    )
+
+if DEBUG_DRAW_PRE_NMS:
+    pre_boxes = pre_boxes.numpy()
+    pre_scores = pre_scores.numpy()
+    pre_cls_ids = pre_cls_ids.numpy().astype(int)
+    for (x1, y1, x2, y2), sc, cid in zip(pre_boxes, pre_scores, pre_cls_ids):
+        x1 = int(np.clip(x1 * W, 0, W - 1))
+        y1 = int(np.clip(y1 * H, 0, H - 1))
+        x2 = int(np.clip(x2 * W, 0, W - 1))
+        y2 = int(np.clip(y2 * H, 0, H - 1))
+        cv2.rectangle(bgr, (x1, y1), (x2, y2), (0, 0, 255), 1)
 
 cv2.imwrite("pred_result.jpg", bgr)
+
+print("boxes shape:", boxes.shape)
+print("scores shape:", scores.shape)
+print("max score:", float(tf.reduce_max(scores)) if tf.size(scores) > 0 else "no scores")
 print("saved: pred_result.jpg")
